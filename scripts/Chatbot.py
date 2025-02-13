@@ -1,10 +1,16 @@
-#recherche et génération des réponses
+# recherche et génération des réponses
 import os
 import json
 import numpy as np
 import faiss
+import sys
 from sentence_transformers import SentenceTransformer
 from transformers import T5Tokenizer, T5ForConditionalGeneration
+
+sys.stdout.reconfigure(encoding='utf-8')
+
+print(f"Dossier actuel: {os.getcwd()}")
+print(f" Fichiers disponibles: {os.listdir('output') if os.path.exists('output') else 'Dossier introuvable'}")
 
 # Définition des chemins
 INDEX_FILE = "output/faiss_index.bin"
@@ -14,20 +20,17 @@ TEXTS_FILE = "output/extracted_texts.json"
 # Vérification des fichiers
 for file in [INDEX_FILE, EMBEDDINGS_FILE, TEXTS_FILE]:
     if not os.path.exists(file):
-        print(f"❌ Erreur : Le fichier '{file}' est manquant. Assurez-vous d'avoir exécuté tous les scripts nécessaires.")
+        print(json.dumps({"error": f"Le fichier '{file}' est manquant."}))
         exit(1)
 
 # Chargement du modèle CamemBERT pour l'encodage des requêtes
-print("🔄 Chargement du modèle CamemBERT...")
 embed_model = SentenceTransformer("camembert-base")
 
 # Chargement du modèle T5 pour la génération de réponses
-print("🔄 Chargement du modèle T5...")
 t5_tokenizer = T5Tokenizer.from_pretrained("t5-small")
 t5_model = T5ForConditionalGeneration.from_pretrained("t5-small")
 
 # Chargement de l'index FAISS
-print("📥 Chargement de l'index FAISS...")
 index = faiss.read_index(INDEX_FILE)
 
 # Chargement des textes extraits pour récupérer les réponses
@@ -41,9 +44,9 @@ for filename, text in extracted_texts.items():
 
 # Vérification de la correspondance entre FAISS et les textes
 if len(all_texts) != index.ntotal:
-    print("⚠️ Avertissement : Le nombre de textes et d'embeddings dans FAISS ne correspond pas.")
+    print(json.dumps({"warning": "Le nombre de textes et d'embeddings dans FAISS ne correspond pas."}))
 
-def search_faiss(query, top_k=3):
+def search_faiss(query, top_k=5):
     """Recherche les passages les plus pertinents avec FAISS."""
     query_embedding = embed_model.encode([query], convert_to_numpy=True)
     distances, indices = index.search(query_embedding, top_k)
@@ -63,21 +66,37 @@ def generate_answer(context, question):
     return t5_tokenizer.decode(outputs[0], skip_special_tokens=True)
 
 if __name__ == "__main__":
-    print("\n🤖 Chatbot Loi de Finances - Posez une question (tapez 'exit' pour quitter)\n")
-    
-    while True:
-        query = input("Vous : ")
-        if query.lower() == "exit":
-            print("👋 Fin de la session.")
-            break
-
-        # Recherche des passages pertinents
+    if len(sys.argv) > 1:
+        # Mode API (appelé depuis Spring Boot)
+        query = sys.argv[1]
         relevant_texts = search_faiss(query)
 
         if not relevant_texts:
-            print("🤖 Chatbot : Désolé, je n'ai pas trouvé d'information pertinente.")
+            response = {"message": "Désolé, je n'ai pas trouvé d'information pertinente."}
         else:
-            # Génération de la réponse avec T5
             context = " ".join(relevant_texts)  # Concatène les passages trouvés
-            response = generate_answer(context, query)
-            print(f"🤖 Chatbot : {response}")
+            generated_response = generate_answer(context, query)
+            response = {"message": generated_response}
+
+        # 🔥 Imprime un JSON pour que Spring Boot puisse le récupérer
+        sys.stdout.reconfigure(encoding='utf-8')  # 🔥 Assure l'encodage UTF-8
+        print(json.dumps(response, ensure_ascii=False))  # 🔥 Renvoie un vrai JSON
+        sys.stdout.flush()  # 🔥 Force l'affichage immédiat de la réponse
+
+    else:
+        # Mode interactif pour test local
+        print("\n🤖 Chatbot Loi de Finances - Posez une question (tapez 'exit' pour quitter)\n")
+        while True:
+            query = input("Vous : ")
+            if query.lower() == "exit":
+                print("👋 Fin de la session.")
+                break
+
+            relevant_texts = search_faiss(query)
+
+            if not relevant_texts:
+                print("🤖 Chatbot : Désolé, je n'ai pas trouvé d'information pertinente.")
+            else:
+                context = " ".join(relevant_texts)  # Concatène les passages trouvés
+                response = generate_answer(context, query)
+                print(f"🤖 Chatbot : {response}")
