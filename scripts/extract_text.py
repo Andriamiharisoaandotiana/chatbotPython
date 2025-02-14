@@ -1,55 +1,66 @@
-#Extraction du texte des pdf
 import pdfplumber
 import os
 import json
+import logging
+from concurrent.futures import ThreadPoolExecutor
 
-DATA_DIR = "data/"  # Dossier où se trouvent les PDF
-OUTPUT_DIR = "output/"  # Dossier où stocker les textes extraits
+# Configuration du logging
+logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+
+DATA_DIR = "data/"  # Dossier des PDF
+OUTPUT_DIR = "output/"  # Dossier de sortie
 OUTPUT_FILE = os.path.join(OUTPUT_DIR, "extracted_texts.json")
 
-# Vérifie si les dossiers existent, sinon les crée
+# Vérifie et crée les dossiers si nécessaire
 os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 def extract_text_from_pdf(pdf_path):
-    """ Extrait le texte d'un fichier PDF """
-    text = ""
-    with pdfplumber.open(pdf_path) as pdf:
-        for page in pdf.pages:
-            extracted_text = page.extract_text()
-            if extracted_text:
-                text += extracted_text + "\n"
-    return text.strip()
-
-def extract_all_pdfs():
-    """ Parcourt tous les fichiers PDF du dossier et extrait le texte """
-    extracted_texts = {}
-
-    pdf_files = [f for f in os.listdir(DATA_DIR) if f.endswith(".pdf")]
-    if not pdf_files:
-        print("❌ Aucun fichier PDF trouvé dans le dossier 'data/'. Ajoutez des fichiers et réessayez.")
+    """Extrait le texte d'un fichier PDF"""
+    try:
+        with pdfplumber.open(pdf_path) as pdf:
+            text = "\n".join(page.extract_text() or "" for page in pdf.pages)
+        return text.strip() if text else None
+    except Exception as e:
+        logging.error(f"Erreur lors de l'extraction de {pdf_path}: {e}")
         return None
 
-    for file in pdf_files:
-        pdf_path = os.path.join(DATA_DIR, file)
-        print(f"📄 Extraction de {file}...")
-        extracted_text = extract_text_from_pdf(pdf_path)
-        
+def extract_all_pdfs():
+    """Parcourt tous les fichiers PDF du dossier et extrait le texte"""
+    pdf_files = [f for f in os.listdir(DATA_DIR) if f.lower().endswith(".pdf")]
+    
+    if not pdf_files:
+        logging.warning("Aucun fichier PDF trouvé dans 'data/'. Ajoutez des fichiers et réessayez.")
+        return None
+
+    extracted_texts = {}
+
+    # Utilisation de ThreadPoolExecutor pour paralléliser l'extraction
+    with ThreadPoolExecutor() as executor:
+        results = executor.map(lambda file: (file, extract_text_from_pdf(os.path.join(DATA_DIR, file))), pdf_files)
+
+    for file, extracted_text in results:
         if extracted_text:
             extracted_texts[file] = extracted_text
+            logging.info(f"✅ Extraction réussie: {file}")
+            
         else:
-            print(f"⚠️ Aucun texte détecté dans {file}.")
+            logging.warning(f"⚠️ Aucun texte détecté dans {file}.")
 
-    return extracted_texts
+    return extracted_texts if extracted_texts else None
+
+def save_extracted_texts(texts):
+    """Enregistre les textes extraits dans un fichier JSON"""
+    try:
+        with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
+            json.dump(texts, f, ensure_ascii=False, indent=4)
+        logging.info(f"✅ Texte enregistré dans '{OUTPUT_FILE}'")
+    except Exception as e:
+        logging.error(f"Erreur lors de l'enregistrement du fichier JSON: {e}")
 
 if __name__ == "__main__":
     texts = extract_all_pdfs()
-    
     if texts:
-        # Sauvegarde des textes extraits dans un fichier JSON
-        with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
-            json.dump(texts, f, ensure_ascii=False, indent=4)
-        
-        print(f"\n✅ Extraction terminée ! Texte enregistré dans '{OUTPUT_FILE}'")
+        save_extracted_texts(texts)
     else:
-        print("❌ Aucune donnée à sauvegarder.")
+        logging.info("❌ Aucune donnée à sauvegarder.")

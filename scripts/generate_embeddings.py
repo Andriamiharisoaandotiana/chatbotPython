@@ -1,13 +1,14 @@
-#génératin des embeddings
 import os
 import json
 import numpy as np
+import faiss  # Ajout de FAISS pour l'indexation
 from sentence_transformers import SentenceTransformer
 
 # Définition des chemins
 INPUT_FILE = "output/extracted_texts.json"
 OUTPUT_DIR = "output/"
-OUTPUT_FILE = os.path.join(OUTPUT_DIR, "embeddings.npy")
+EMBEDDINGS_FILE = os.path.join(OUTPUT_DIR, "embeddings.npy")
+INDEX_FILE = os.path.join(OUTPUT_DIR, "faiss_index.bin")
 
 # Vérification et création du dossier de sortie
 os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -33,16 +34,33 @@ print("🔄 Chargement du modèle CamemBERT...")
 model = SentenceTransformer("camembert-base")
 
 # Génération des embeddings
-embeddings = {}
+all_texts = []
+all_embeddings = []
 
 for filename, text in extracted_texts.items():
     print(f"🔍 Génération d'embeddings pour {filename}...")
-    sentences = text.split("\n")  # Découper en phrases pour de meilleurs résultats
-    embeddings[filename] = model.encode(sentences, convert_to_numpy=True)
+    sentences = text.split("\n")  # Découper en phrases
+    embeddings = model.encode(sentences, convert_to_numpy=True)
+    all_texts.extend(sentences)
+    all_embeddings.append(embeddings)
 
 # Conversion en tableau numpy
-all_embeddings = np.array([emb for emb_list in embeddings.values() for emb in emb_list])
+all_embeddings = np.vstack(all_embeddings) if all_embeddings else np.array([])
+
+# Vérification que des embeddings ont bien été générés
+if all_embeddings.size == 0:
+    print("❌ Erreur : Aucun embedding généré, impossible de créer l'index FAISS.")
+    exit(1)
 
 # Sauvegarde des embeddings
-np.save(OUTPUT_FILE, all_embeddings)
-print(f"\n✅ Embeddings générés et enregistrés dans '{OUTPUT_FILE}'.")
+np.save(EMBEDDINGS_FILE, all_embeddings)
+print(f"✅ Embeddings générés et enregistrés dans '{EMBEDDINGS_FILE}'.")
+
+# Création de l'index FAISS
+dimension = all_embeddings.shape[1]
+index = faiss.IndexFlatL2(dimension)  # Index basé sur la distance L2
+index.add(all_embeddings)  # Ajout des embeddings dans FAISS
+
+# Sauvegarde de l'index FAISS
+faiss.write_index(index, INDEX_FILE)
+print(f"✅ Index FAISS enregistré dans '{INDEX_FILE}'.")
