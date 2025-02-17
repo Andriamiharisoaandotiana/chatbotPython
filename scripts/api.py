@@ -22,106 +22,104 @@ if not os.path.exists(INDEX_FILE) or not os.path.exists(TEXTS_FILE):
     exit(1)
 
 # Chargement des modèles
-logging.info("🔄 Chargement du modèle CamemBERT...")
-embed_model = SentenceTransformer("camembert-base")
+try:
+    logging.info("🔄 Chargement du modèle CamemBERT...")
+    embed_model = SentenceTransformer("camembert/camembert-base")
 
-logging.info("🔄 Chargement du modèle T5...")
-t5_tokenizer = T5Tokenizer.from_pretrained("t5-large")
-t5_model = T5ForConditionalGeneration.from_pretrained("t5-large")
+    logging.info("🔄 Chargement du modèle Flan-T5...")
+    t5_tokenizer = T5Tokenizer.from_pretrained("google/flan-t5-large")
+    t5_model = T5ForConditionalGeneration.from_pretrained("google/flan-t5-large")
 
-logging.info("🔄 Chargement du modèle de re-ranking...")
-reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
+    logging.info("🔄 Chargement du modèle de re-ranking...")
+    reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
+except Exception as e:
+    logging.error(f"❌ Erreur lors du chargement des modèles : {e}")
+    exit(1)
 
-logging.info("🔄 Chargement de l'index FAISS...")
-index = faiss.read_index(INDEX_FILE)
+# Chargement de l'index FAISS
+try:
+    logging.info("🔄 Chargement de l'index FAISS...")
+    index = faiss.read_index(INDEX_FILE)
+except Exception as e:
+    logging.error(f"❌ Erreur lors du chargement de l'index FAISS : {e}")
+    exit(1)
 
-logging.info("🔄 Chargement des textes extraits...")
-with open(TEXTS_FILE, "r", encoding="utf-8") as f:
-    extracted_texts = json.load(f)
-
-# Mise en place d'une liste de tous les textes
-all_texts = [sentence for text in extracted_texts.values() for sentence in text.split("\n")] if extracted_texts else []
+# Chargement des textes extraits
+try:
+    logging.info("🔄 Chargement des textes extraits...")
+    with open(TEXTS_FILE, "r", encoding="utf-8") as f:
+        extracted_texts = json.load(f)
+    all_texts = [sentence for text in extracted_texts.values() for sentence in text.split("\n")] if extracted_texts else []
+except Exception as e:
+    logging.error(f"❌ Erreur lors du chargement des textes extraits : {e}")
+    exit(1)
 
 def search_faiss(query, top_k=10):
     """Recherche les passages pertinents avec FAISS et applique un re-ranking."""
-    query_embedding = embed_model.encode([query], normalize_embeddings=True)
-    distances, indices = index.search(query_embedding, top_k)
+    try:
+        query_embedding = embed_model.encode([query], normalize_embeddings=True)
+        distances, indices = index.search(query_embedding, top_k)
 
-    results = [all_texts[idx] for idx in indices[0] if 0 <= idx < len(all_texts)]
+        results = [all_texts[idx] for idx in indices[0] if 0 <= idx < len(all_texts)]
+        filtered_results = list(set([r for r in results if len(r) > 10]))
 
-    # Supprimer les passages courts (< 10 caractères) et éliminer les doublons
-    filtered_results = list(set([r for r in results if len(r) > 10]))
+        if not filtered_results:
+            return []
 
-    if not filtered_results:
+        ranking_scores = reranker.predict([(query, passage) for passage in filtered_results])
+        ranked_results = [text for _, text in sorted(zip(ranking_scores, filtered_results), reverse=True)]
+        return ranked_results[:5]
+    except Exception as e:
+        logging.error(f"❌ Erreur dans la recherche FAISS : {e}")
         return []
-
-    # Re-ranking des passages retournés par FAISS
-    ranking_scores = reranker.predict([(query, passage) for passage in filtered_results])
-    ranked_results = [text for _, text in sorted(zip(ranking_scores, filtered_results), reverse=True)]
-
-    logging.info(f"📄 Passages pertinents après re-ranking : {ranked_results[:5]}")
-    return ranked_results[:5]  # On garde les 5 meilleurs
 
 def generate_answer(context, question):
     """Génère une réponse avec le modèle T5."""
     if not context:
         return "Désolé, je n'ai pas trouvé d'information pertinente."
 
-    input_text = f"question: {question} contexte: {context}"
-    logging.info(f"📜 Texte envoyé à T5 : {input_text[:500]}")
-
-    inputs = t5_tokenizer(input_text, return_tensors="pt", max_length=512, truncation=True)
-
-    outputs = t5_model.generate(
-        **inputs,
-        max_length=150,  # Limite la longueur pour éviter les répétitions
-        num_beams=5,  # Réduit les choix pour éviter des réponses aléatoires
-        temperature=0.7,  # Rend la réponse plus naturelle
-        do_sample=True,  # Active l'échantillonnage
-        top_p=0.9,  # Sélectionne les tokens les plus probables
-        early_stopping=True
-    )
-
-    response = t5_tokenizer.decode(outputs[0], skip_special_tokens=True).strip()
-
-    # Vérification si la réponse est identique à la question (ce qui est un problème)
-    if response.lower() == question.lower():
-        logging.warning("⚠️ La réponse générée est identique à la question. Ajustement en cours...")
-        return "Je ne peux pas fournir une réponse précise pour cette question."
-
-    logging.info(f"✅ Réponse générée : {response}")
-    return response
-
-
-    response = t5_tokenizer.decode(outputs[0], skip_special_tokens=True)
-    
-    # Vérification si la réponse est pertinente
-    if len(response.split()) < 5:
-        response = "Je ne peux pas fournir une réponse précise pour cette question."
-
-    logging.info(f"✅ Réponse générée : {response}")
-    return response
+    try:
+        input_text = f"question: {question} contexte: {context}"
+        inputs = t5_tokenizer(input_text, return_tensors="pt", max_length=512, truncation=True)
+        outputs = t5_model.generate(
+            **inputs,
+            max_length=150,
+            num_beams=5,
+            temperature=0.7,
+            do_sample=True,
+            top_p=0.9,
+            early_stopping=True
+        )
+        response = t5_tokenizer.decode(outputs[0], skip_special_tokens=True).strip()
+        if response.lower() == question.lower():
+            return "Je ne peux pas fournir une réponse précise pour cette question."
+        return response
+    except Exception as e:
+        logging.error(f"❌ Erreur lors de la génération de réponse : {e}")
+        return "Une erreur est survenue lors de la génération de la réponse."
 
 @app.route("/chatbot", methods=["POST"])
 def chatbot():
     """Endpoint pour interroger le chatbot."""
-    data = request.get_json()
-    query = data.get("question")
+    try:
+        data = request.get_json()
+        query = data.get("question")
+        if not query:
+            return jsonify({"error": "La question est obligatoire"}), 400
 
-    if not query:
-        return jsonify({"error": "La question est obligatoire"}), 400
+        logging.info(f"📩 Requête reçue : {query}")
+        relevant_texts = search_faiss(query)
+        
+        if not relevant_texts:
+            generated_response = "Désolé, je n'ai pas trouvé d'information pertinente."
+        else:
+            context = " ".join(relevant_texts[:3])
+            generated_response = generate_answer(context, query)
 
-    logging.info(f"📩 Requête reçue : {query}")
-    relevant_texts = search_faiss(query)
-    
-    if not relevant_texts:
-        generated_response = "Désolé, je n'ai pas trouvé d'information pertinente."
-    else:
-        context = " ".join(relevant_texts[:3])  # Limiter le contexte à 3 passages pertinents
-        generated_response = generate_answer(context, query)
-
-    logging.info(f"✅ Réponse générée : {generated_response}")
-    return jsonify({"message": generated_response})
+        return jsonify({"message": generated_response})
+    except Exception as e:
+        logging.error(f"❌ Erreur dans l'API : {e}")
+        return jsonify({"error": "Une erreur est survenue"}), 500
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
